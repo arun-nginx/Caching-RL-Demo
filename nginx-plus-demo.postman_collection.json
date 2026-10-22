@@ -1,0 +1,331 @@
+{
+  "info": {
+    "name": "NGINX Plus - Artifactory Demo",
+    "description": "Manual demo of NGINX Plus caching, request rate limiting, cache bypass, and monitoring APIs. Send requests individually in numbered order. Request 06 intentionally generates 30 additional requests against the rate-test endpoint. Use only against your demo instance.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8085",
+      "type": "string"
+    },
+    {
+      "key": "artifactName",
+      "value": "demo-manual.jar",
+      "type": "string"
+    },
+    {
+      "key": "apiVersion",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Check NGINX listener",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/",
+        "description": "Expected: HTTP 200 and NGINX Plus artifact demo. This checks the NGINX listener, not origin health."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('NGINX listener responds with HTTP 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - Cache MISS - download a new artifact",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/artifactory/libs-release/{{artifactName}}",
+        "description": "Generates a unique artifact filename on every Send, ensuring a new cache key. Expected: X-Cache-Status MISS and approximately 350 ms origin processing time with the mock origin. The generated filename is reused by subsequent cache requests. This mock origin accepts arbitrary artifact filenames; a real Artifactory would require an existing artifact."
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const name = 'demo-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.jar';",
+              "pm.collectionVariables.set('artifactName', name);",
+              "console.log('New artifact cache key:', name);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Artifact download succeeds', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('First download is a cache MISS', function () {",
+              "  pm.expect(pm.response.headers.get('X-Cache-Status')).to.eql('MISS');",
+              "});",
+              "const originId = pm.response.headers.get('X-Origin-Request');",
+              "pm.collectionVariables.set('cachedOriginRequest', originId || '');",
+              "console.log('Cache:', pm.response.headers.get('X-Cache-Status'), 'Origin request:', originId, 'Postman time:', pm.response.responseTime + ' ms');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Cache HIT - download the same artifact",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/artifactory/libs-release/{{artifactName}}",
+        "description": "Send within 60 seconds after request 02. Expected: HIT, the same X-Origin-Request value, and lower latency. Repeat this request to show repeated cache hits. If the response has expired, send request 02 again, followed immediately by this request."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Artifact download succeeds', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Repeated download is a cache HIT', function () {",
+              "  pm.expect(pm.response.headers.get('X-Cache-Status')).to.eql('HIT');",
+              "});",
+              "pm.test('Cached origin counter is unchanged', function () {",
+              "  pm.expect(pm.response.headers.get('X-Origin-Request')).to.eql(pm.collectionVariables.get('cachedOriginRequest'));",
+              "});",
+              "console.log('Cache:', pm.response.headers.get('X-Cache-Status'), 'Origin request:', pm.response.headers.get('X-Origin-Request'), 'Postman time:', pm.response.responseTime + ' ms');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Authorization header - cache BYPASS",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer demo-token",
+            "type": "text"
+          }
+        ],
+        "url": "{{baseUrl}}/artifactory/libs-release/{{artifactName}}",
+        "description": "Expected: BYPASS. Send twice and observe that X-Origin-Request changes because both requests reach the origin. The mock origin does not validate this token; this demonstrates cache bypass, not authentication."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Credentialed request bypasses the shared cache', function () {",
+              "  pm.expect(pm.response.headers.get('X-Cache-Status')).to.eql('BYPASS');",
+              "});",
+              "console.log('Cache:', pm.response.headers.get('X-Cache-Status'), 'Origin request:', pm.response.headers.get('X-Origin-Request'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Rate limit - normal request",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/rate-test/",
+        "description": "Expected under light traffic: HTTP 200 and X-Rate-Limit-Status PASSED. The policy is 5 requests/second per client IP, with burst=5 and nodelay. This route does not use the artifact cache. Wait a few seconds after a burst before testing again."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Normal request is accepted', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Rate-limit status is PASSED', function () {",
+              "  pm.expect(pm.response.headers.get('X-Rate-Limit-Status')).to.eql('PASSED');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Rate limit - generate a burst",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/rate-test/",
+        "description": "Click Send once. After the initial response, the post-response script launches 30 additional requests without waiting between launches. Open the Postman Console and Test Results to see the status counts. Expect some HTTP 200 responses and some HTTP 429 responses. The main response pane shows only the initial request, not all burst responses. Exact results depend on client dispatch and network timing."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const base = pm.variables.replaceIn('{{baseUrl}}').replace(/\\/$/, '');",
+              "const total = 30;",
+              "const counts = {};",
+              "let completed = 0;",
+              "console.log('Launching', total, 'requests against', base + '/rate-test/');",
+              "for (let i = 0; i < total; i++) {",
+              "  pm.sendRequest({ url: base + '/rate-test/', method: 'GET' }, function (err, res) {",
+              "    const key = err ? 'NETWORK_ERROR' : String(res.code);",
+              "    counts[key] = (counts[key] || 0) + 1;",
+              "    completed++;",
+              "    console.log('Burst response', completed, 'HTTP', key, 'Limit:', res ? res.headers.get('X-Rate-Limit-Status') : String(err));",
+              "    if (completed === total) {",
+              "      console.log('BURST SUMMARY:', JSON.stringify(counts));",
+              "      pm.test('Burst completed: ' + JSON.stringify(counts), function () {",
+              "        pm.expect(completed).to.eql(total);",
+              "      });",
+              "      pm.test('At least one request was rate-limited with HTTP 429', function () {",
+              "        pm.expect(counts['429'] || 0).to.be.above(0);",
+              "      });",
+              "    }",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Plus API - discover supported versions",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/",
+        "description": "Returns the supported Plus API versions. The post-response script automatically saves the highest version in the apiVersion collection variable. Run this before requests 08-10. HTTP 403 means your source address is not allowed by the API access rules."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Plus API is accessible', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "if (pm.response.code === 200) {",
+              "  const versions = pm.response.json();",
+              "  const latest = Math.max.apply(null, versions.map(Number));",
+              "  pm.collectionVariables.set('apiVersion', String(latest));",
+              "  console.log('Selected Plus API version:', latest);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Plus API - cache statistics",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/{{apiVersion}}/http/caches/artifact_cache",
+        "description": "Inspect cache size and counters such as hit, miss, bypass, and stale. Send after the cache demo to show aggregate cache behavior. Counters include other traffic since the relevant state was initialized; they are not limited to this Postman session."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Cache metrics are available', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 - Plus API - upstream and health checks",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/{{apiVersion}}/http/upstreams/artifact_origin",
+        "description": "Inspect peers, peer state, active connections, response counters, and health_checks. Stop the mock origin separately, wait for two failed health checks, then resend to observe the unhealthy state. Restart the origin and resend after a successful check to observe recovery."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Upstream metrics are available', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 - Plus API - server traffic and response codes",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/{{apiVersion}}/http/server_zones/artifact_demo",
+        "description": "Inspect requests and response status-class counters for the artifact_demo server zone. After the burst test, look for increased 4xx responses. These counters include all requests handled by this monitored server, including monitoring requests."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Server-zone metrics are available', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 - Optional - stale artifact during origin outage",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/artifactory/libs-release/{{artifactName}}",
+        "description": "Preparation: send request 02, then request 03 to confirm HIT. Stop the mock origin from the VM shell. Wait at least 65 seconds from cache population, then send this request. Expected: HTTP 200 and STALE. Send within a few minutes so the object has not been removed by the 10-minute inactivity policy. Restart the origin after the demo. Do not run request 02 during the outage because it generates a new, uncached filename."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Previously cached artifact remains available', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Expired cached response is served as STALE', function () {",
+              "  pm.expect(pm.response.headers.get('X-Cache-Status')).to.eql('STALE');",
+              "});",
+              "console.log('Cache:', pm.response.headers.get('X-Cache-Status'), 'Origin request:', pm.response.headers.get('X-Origin-Request'));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

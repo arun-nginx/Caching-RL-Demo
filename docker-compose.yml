@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  nginx-plus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nginx-plus-demo
+    ports:
+      # Use port 8085 on the host to avoid conflict with existing services on 8080.
+      # You can override with DEMO_PORT=8080 if 8080 is free.
+      - "${DEMO_PORT:-8085}:8080"
+    restart: unless-stopped
+    volumes:
+      # Mount nginx.conf and origin.py for live editing without rebuilding
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./origin.py:/opt/nginx-plus-demo/origin.py:ro
