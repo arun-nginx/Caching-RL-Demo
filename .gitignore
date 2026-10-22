@@ -1,0 +1,5 @@
+license.crt
+license.key
+license.jwt
+*.log
+*.pid
